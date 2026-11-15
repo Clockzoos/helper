@@ -1,1 +1,150 @@
-<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Key system</title><style>body{background:#111;color:#fff;font-family:Arial,sans-serif;text-align:center;padding-top:60px}button{padding:15px 30px;font-size:16px;border-radius:12px;background:#00FF30;color:#000;cursor:pointer;font-weight:bold;border:none}button:disabled{opacity:0.6;cursor:not-allowed}.error-message{color:#ff4444;margin-top:20px;font-weight:bold}</style></head><body><h1>Key system</h1><p>Click the button below to get your key for the script.</p><button id='btn'>Get key</button><div id='errorMsg' class='error-message'></div><script>const POST_URL = "https://www.kynaroid.com/api/key-system";const TEMP_KEY = "ugjv98rojtfs0wvtvweumk48a";const CUSTOM_ALPHABET_CODES = [65,66,67,68,97,98,99,100,1073,1075,1076,1078,1079,1080,1083,1087,1092,1094,1095,1096,1108,1110,1111,1169,946,947,948,952,955,958,1488,1489,1490,1491,1575,1576,1578,1579,12354,12356,12450,12452,12593,12596,19968,20108,5792,5794,11392,11394,11264,11265,2309,2310,3585,3586,4304,4305,1329,1330,2949,2950,3904,3905];var CUSTOM_ALPHABET = '';for (var _ci = 0; _ci < CUSTOM_ALPHABET_CODES.length; _ci++) CUSTOM_ALPHABET += String.fromCharCode(CUSTOM_ALPHABET_CODES[_ci]);function b64ToBytes(b64){var clean=String(b64).replace(/[\r\n\s]/g,'');var binary=atob(clean);var bytes=new Uint8Array(binary.length);for(var i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);return bytes;}function bytesToB64(bytes){var s='';for(var i=0;i<bytes.length;i++)s+=String.fromCharCode(bytes[i]);return btoa(s);}function concatBytes(a,b){var out=new Uint8Array(a.length+b.length);out.set(a,0);out.set(b,a.length);return out;}function customEncode64(bytes){var out='';var i=0;var len=bytes.length;while(i<len){var b0=bytes[i++]&0xFF;var b1=i<len?(bytes[i++]&0xFF):null;var b2=i<len?(bytes[i++]&0xFF):null;var c0=b0>>2;var c1=((b0&3)<<4)|(b1===null?0:(b1>>4));var c2=b1===null?64:(((b1&15)<<2)|(b2===null?0:(b2>>6)));var c3=b2===null?64:(b2&63);out+=CUSTOM_ALPHABET.charAt(c0);out+=CUSTOM_ALPHABET.charAt(c1);out+=(c2===64?'=':CUSTOM_ALPHABET.charAt(c2));out+=(c3===64?'=':CUSTOM_ALPHABET.charAt(c3));}return out;}function customDecode64(str){if(!str)return new Uint8Array(0);var clean=String(str).replace(/=/g,'');var out=[];var buffer=0;var bits=0;for(var i=0;i<clean.length;i++){var idx=CUSTOM_ALPHABET.indexOf(clean.charAt(i));if(idx<0)throw new Error('Invalid character');buffer=(buffer<<6)|idx;bits+=6;if(bits>=8){bits-=8;out.push((buffer>>bits)&0xFF);}}return new Uint8Array(out);}async function hmacSha256(data,keyBytes){var keyRaw=typeof keyBytes==='string'?new TextEncoder().encode(keyBytes):keyBytes;var key=await crypto.subtle.importKey('raw',keyRaw,{name:'HMAC',hash:'SHA-256'},false,['sign']);var dataRaw=typeof data==='string'?new TextEncoder().encode(data):data;var sig=await crypto.subtle.sign('HMAC',key,dataRaw);return new Uint8Array(sig);}async function aesGcmEncrypt(plaintext,keyBytes){var key=await crypto.subtle.importKey('raw',keyBytes,{name:'AES-GCM'},false,['encrypt']);var iv=crypto.getRandomValues(new Uint8Array(12));var ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv,tagLength:128},key,new TextEncoder().encode(plaintext));var ctBytes=new Uint8Array(ct);var tag=ctBytes.slice(ctBytes.length-16);var ciphertext=ctBytes.slice(0,ctBytes.length-16);return{ciphertext:ciphertext,iv:iv,tag:tag};}async function aesGcmDecrypt(ciphertext,iv,tag,keyBytes){var key=await crypto.subtle.importKey('raw',keyBytes,{name:'AES-GCM'},false,['decrypt']);var combined=concatBytes(ciphertext,tag);var pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv,tagLength:128},key,combined);return new TextDecoder().decode(pt);}async function importRsaPublic(pem){var b64=pem.replace(/-----[^-]+-----/g,'').replace(/\s/g,'');var der=b64ToBytes(b64);return await crypto.subtle.importKey('spki',der,{name:'RSA-OAEP',hash:'SHA-256'},false,['encrypt']);}function pemWrap(b64){var clean=String(b64).replace(/[^A-Za-z0-9+/=]/g,'');var lines=clean.match(/.{1,64}/g)||[];return '-----BEGIN PUBLIC KEY-----\n'+lines.join('\n')+'\n-----END PUBLIC KEY-----';}var SERVER_PUB_CACHE=null;var SERVER_PUB_CACHE_EXPIRY=0;var SERVER_PUB_TTL_MS=15*60*1000;async function fetchServerPublicKey(forceRefresh){var now=Date.now();if(!forceRefresh&&SERVER_PUB_CACHE&&SERVER_PUB_CACHE_EXPIRY>now)return SERVER_PUB_CACHE;var res=await fetch(POST_URL+'?action=get_public_key&_='+Date.now());var data=await res.json();if(!data.success)throw new Error('Failed to fetch server public key.');SERVER_PUB_CACHE=pemWrap(data.public_key);SERVER_PUB_CACHE_EXPIRY=now+SERVER_PUB_TTL_MS;return SERVER_PUB_CACHE;}async function encryptedRequestInternal(action,params,serverPub){var aesKeyBytes=crypto.getRandomValues(new Uint8Array(32));var aesKeyB64=bytesToB64(aesKeyBytes);var payloadJson=JSON.stringify({action:action,params:params});var enc=await aesGcmEncrypt(payloadJson,aesKeyBytes);var encPayloadB64=customEncode64(enc.ciphertext);var ivB64=customEncode64(enc.iv);var tagB64=customEncode64(enc.tag);var hmacKeyBytes=await hmacSha256(aesKeyBytes,'HMAC-KEY-V1');var sigB64=customEncode64(await hmacSha256(encPayloadB64+'|'+ivB64+'|'+tagB64,hmacKeyBytes));var serverPubKey=await importRsaPublic(serverPub);var aesKeyB64Bytes=new TextEncoder().encode(aesKeyB64);var encKeyBuf=await crypto.subtle.encrypt({name:'RSA-OAEP'},serverPubKey,aesKeyB64Bytes);var encKeyB64=customEncode64(new Uint8Array(encKeyBuf));var body='envelope=1&enc_key='+encodeURIComponent(encKeyB64)+'&enc_payload='+encodeURIComponent(encPayloadB64)+'&iv='+encodeURIComponent(ivB64)+'&tag='+encodeURIComponent(tagB64)+'&sig='+encodeURIComponent(sigB64);var res=await fetch(POST_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});var raw=await res.json();return{raw:raw,aesKeyBytes:aesKeyBytes,hmacKeyBytes:hmacKeyBytes,serverPub:serverPub};}async function encryptedRequest(action,params){var serverPub=await fetchServerPublicKey(false);var attempt=await encryptedRequestInternal(action,params,serverPub);var raw=attempt.raw;if(!raw.success){if(raw.message==='Validation failed.'){var serverPub2=await fetchServerPublicKey(true);var attempt2=await encryptedRequestInternal(action,params,serverPub2);var raw2=attempt2.raw;if(!raw2.success){if(raw2.message==='Validation failed.'){var err=new Error('Validation failed');err.code='VALIDATION';throw err;}throw new Error(raw2.message||'Server error.');}raw=raw2;attempt=attempt2;}else{throw new Error(raw.message||'Server error.');}}var expectedSigB64=customEncode64(await hmacSha256(raw.data+'|'+raw.iv+'|'+raw.tag,attempt.hmacKeyBytes));if(expectedSigB64!==raw.sig)throw new Error('Server signature verification failed.');var plain=await aesGcmDecrypt(customDecode64(raw.data),customDecode64(raw.iv),customDecode64(raw.tag),attempt.aesKeyBytes);return JSON.parse(plain);}async function getHWID(){var data=[navigator.userAgent,navigator.language,navigator.platform,screen.width,screen.height,screen.colorDepth,Intl.DateTimeFormat().resolvedOptions().timeZone,navigator.hardwareConcurrency||'',navigator.deviceMemory||''].join('|');var hashBuffer=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(data));return Array.from(new Uint8Array(hashBuffer)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');}fetchServerPublicKey(false).catch(function(){});document.getElementById('btn').onclick=async function(){var btn=this;btn.disabled=true;btn.textContent='Generating the key...';document.getElementById('errorMsg').innerHTML='';try{var hwid=await getHWID();var data=await encryptedRequest('generate_key',{temp_key:TEMP_KEY,hwid:hwid});if(!data.success||!data.key)throw new Error(data.message||'Failed to generate key.');var p=document.createElement('p');p.textContent='Key: '+data.key;document.body.insertBefore(p,btn);btn.textContent='Copy key';btn.disabled=false;btn.onclick=function(){navigator.clipboard.writeText(data.key);};}catch(e){document.getElementById('errorMsg').innerHTML=e.message;btn.textContent='Error';btn.disabled=false;}};</script></body></html>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Instant Key Generator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f172a;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: #1e293b;
+      padding: 30px;
+      border-radius: 16px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+      width: 100%;
+      max-width: 400px;
+      text-align: center;
+      border: 1px solid #334155;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 10px;
+      color: #38bdf8;
+    }
+    p {
+      color: #94a3b8;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .btn {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 16px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.2s, transform 0.1s;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { background: #475569; cursor: not-allowed; }
+    
+    .result-box {
+      margin-top: 20px;
+      background: #0f172a;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px dashed #475569;
+      word-break: break-all;
+      font-family: monospace;
+      font-size: 14px;
+      color: #38bdf8;
+      display: none;
+    }
+    .error {
+      color: #ef4444;
+      font-size: 13px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h1>Instant Key System</h1>
+    <p>Klik tombol di bawah untuk mendapatkan key secara instan tanpa iklan.</p>
+    
+    <button id="btn" class="btn">Generate Key</button>
+    <div id="errorMsg" class="error"></div>
+    <div id="resultBox" class="result-box"></div>
+  </div>
+
+  <script>
+    // Konfigurasi Kynaroid kamu
+    const POST_URL = "https://www.kynaroid.com/api/key-system";
+    const TEMP_KEY = "ugjv98rojtfs0wvtvweumk48a"; // Ganti dengan temp_key milikmu jika berbeda
+    
+    const CUSTOM_ALPHABET_CODES = [65,66,67,68,97,98,99,100,1073,1075,1076,1078,1079,1080,1083,1087,1092,1094,1095,1096,1108,1110,1111,1169,946,947,948,952,955,958,1488,1489,1490,1491,1575,1576,1578,1579,12354,12356,12450,12452,12593,12596,19968,20108,5792,5794,11392,11394,11264,11265,2309,2310,3585,3586,4304,4305,1329,1330,2949,2950,3904,3905];
+    var CUSTOM_ALPHABET = '';
+    for (var _ci = 0; _ci < CUSTOM_ALPHABET_CODES.length; _ci++) CUSTOM_ALPHABET += String.fromCharCode(CUSTOM_ALPHABET_CODES[_ci]);
+
+    function b64ToBytes(b64){var clean=String(b64).replace(/[\r\n\s]/g,'');var binary=atob(clean);var bytes=new Uint8Array(binary.length);for(var i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);return bytes;}
+    function bytesToB64(bytes){var s='';for(var i=0;i<bytes.length;i++)s+=String.fromCharCode(bytes[i]);return btoa(s);}
+    function concatBytes(a,b){var out=new Uint8Array(a.length+b.length);out.set(a,0);out.set(b,a.length);return out;}
+    function customEncode64(bytes){var out='';var i=0;var len=bytes.length;while(i<len){var b0=bytes[i++]&0xFF;var b1=i<len?(bytes[i++]&0xFF):null;var b2=i<len?(bytes[i++]&0xFF):null;var c0=b0>>2;var c1=((b0&3)<<4)|(b1===null?0:(b1>>4));var c2=b1===null?64:(((b1&15)<<2)|(b2===null?0:(b2>>6)));var c3=b2===null?64:(b2&63);out+=CUSTOM_ALPHABET.charAt(c0);out+=CUSTOM_ALPHABET.charAt(c1);out+=(c2===64?'=':CUSTOM_ALPHABET.charAt(c2));out+=(c3===64?'=':CUSTOM_ALPHABET.charAt(c3));}return out;}
+    function customDecode64(str){if(!str)return new Uint8Array(0);var clean=String(str).replace(/=/g,'');var out=[];var buffer=0;var bits=0;for(var i=0;i<clean.length;i++){var idx=CUSTOM_ALPHABET.indexOf(clean.charAt(i));if(idx<0)throw new Error('Invalid character');buffer=(buffer<<6)|idx;bits+=6;if(bits>=8){bits-=8;out.push((buffer>>bits)&0xFF);}}return new Uint8Array(out);}
+    async function hmacSha256(data,keyBytes){var keyRaw=typeof keyBytes==='string'?new TextEncoder().encode(keyBytes):keyBytes;var key=await crypto.subtle.importKey('raw',keyRaw,{name:'HMAC',hash:'SHA-256'},false,['sign']);var dataRaw=typeof data==='string'?new TextEncoder().encode(data):data;var sig=await crypto.subtle.sign('HMAC',key,dataRaw);return new Uint8Array(sig);}
+    async function aesGcmEncrypt(plaintext,keyBytes){var key=await crypto.subtle.importKey('raw',keyBytes,{name:'AES-GCM'},false,['encrypt']);var iv=crypto.getRandomValues(new Uint8Array(12));var ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv,tagLength:128},key,new TextEncoder().encode(plaintext));var ctBytes=new Uint8Array(ct);var tag=ctBytes.slice(ctBytes.length-16);var ciphertext=ctBytes.slice(0,ctBytes.length-16);return{ciphertext:ciphertext,iv:iv,tag:tag};}
+    async function aesGcmDecrypt(ciphertext,iv,tag,keyBytes){var key=await crypto.subtle.importKey('raw',keyBytes,{name:'AES-GCM'},false,['decrypt']);var combined=concatBytes(ciphertext,tag);var pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv,tagLength:128},key,combined);return new TextDecoder().decode(pt);}
+    async function importRsaPublic(pem){var b64=pem.replace(/-----[^-]+-----/g,'').replace(/\s/g,'');var der=b64ToBytes(b64);return await crypto.subtle.importKey('spki',der,{name:'RSA-OAEP',hash:'SHA-256'},false,['encrypt']);}
+    function pemWrap(b64){var clean=String(b64).replace(/[^A-Za-z0-9+/=]/g,'');var lines=clean.match(/.{1,64}/g)||[];return '-----BEGIN PUBLIC KEY-----\n'+lines.join('\n')+'\n-----END PUBLIC KEY-----';}
+    
+    var SERVER_PUB_CACHE=null;var SERVER_PUB_CACHE_EXPIRY=0;var SERVER_PUB_TTL_MS=15*60*1000;
+    async function fetchServerPublicKey(forceRefresh){var now=Date.now();if(!forceRefresh&&SERVER_PUB_CACHE&&SERVER_PUB_CACHE_EXPIRY>now)return SERVER_PUB_CACHE;var res=await fetch(POST_URL+'?action=get_public_key&_='+Date.now());var data=await res.json();if(!data.success)throw new Error('Failed to fetch server public key.');SERVER_PUB_CACHE=pemWrap(data.public_key);SERVER_PUB_CACHE_EXPIRY=now+SERVER_PUB_TTL_MS;return SERVER_PUB_CACHE;}
+    async function encryptedRequestInternal(action,params,serverPub){var aesKeyBytes=crypto.getRandomValues(new Uint8Array(32));var aesKeyB64=bytesToB64(aesKeyBytes);var payloadJson=JSON.stringify({action:action,params:params});var enc=await aesGcmEncrypt(payloadJson,aesKeyBytes);var encPayloadB64=customEncode64(enc.ciphertext);var ivB64=customEncode64(enc.iv);var tagB64=customEncode64(enc.tag);var hmacKeyBytes=await hmacSha256(aesKeyBytes,'HMAC-KEY-V1');var sigB64=customEncode64(await hmacSha256(encPayloadB64+'|'+ivB64+'|'+tagB64,hmacKeyBytes));var serverPubKey=await importRsaPublic(serverPub);var aesKeyB64Bytes=new TextEncoder().encode(aesKeyB64);var encKeyBuf=await crypto.subtle.encrypt({name:'RSA-OAEP'},serverPubKey,aesKeyB64Bytes);var encKeyB64=customEncode64(new Uint8Array(encKeyBuf));var body='envelope=1&enc_key='+encodeURIComponent(encKeyB64)+'&enc_payload='+encodeURIComponent(encPayloadB64)+'&iv='+encodeURIComponent(ivB64)+'&tag='+encodeURIComponent(tagB64)+'&sig='+encodeURIComponent(sigB64);var res=await fetch(POST_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});var raw=await res.json();return{raw:raw,aesKeyBytes:aesKeyBytes,hmacKeyBytes:hmacKeyBytes,serverPub:serverPub};}
+    async function encryptedRequest(action,params){var serverPub=await fetchServerPublicKey(false);var attempt=await encryptedRequestInternal(action,params,serverPub);var raw=attempt.raw;if(!raw.success){if(raw.message==='Validation failed.'){var serverPub2=await fetchServerPublicKey(true);var attempt2=await encryptedRequestInternal(action,params,serverPub2);var raw2=attempt2.raw;if(!raw2.success){if(raw2.message==='Validation failed.'){var err=new Error('Validation failed');err.code='VALIDATION';throw err;}throw new Error(raw2.message||'Server error.');}raw=raw2;attempt=attempt2;}else{throw new Error(raw.message||'Server error.');}}var expectedSigB64=customEncode64(await hmacSha256(raw.data+'|'+raw.iv+'|'+raw.tag,attempt.hmacKeyBytes));if(expectedSigB64!==raw.sig)throw new Error('Server signature verification failed.');var plain=await aesGcmDecrypt(customDecode64(raw.data),customDecode64(raw.iv),customDecode64(raw.tag),attempt.aesKeyBytes);return JSON.parse(plain);}
+    async function getHWID(){var data=[navigator.userAgent,navigator.language,navigator.platform,screen.width,screen.height,screen.colorDepth,Intl.DateTimeFormat().resolvedOptions().timeZone,navigator.hardwareConcurrency||'',navigator.deviceMemory||''].join('|');var hashBuffer=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(data));return Array.from(new Uint8Array(hashBuffer)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');}
+    
+    fetchServerPublicKey(false).catch(function(){});
+
+    document.getElementById('btn').onclick = async function(){
+      var btn = this;
+      var errorMsg = document.getElementById('errorMsg');
+      var resultBox = document.getElementById('resultBox');
+      
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+      errorMsg.textContent = '';
+      resultBox.style.display = 'none';
+
+      try {
+        var hwid = await getHWID();
+        var data = await encryptedRequest('generate_key',{temp_key:TEMP_KEY,hwid:hwid});
+        
+        if(!data.success || !data.key) throw new Error(data.message || 'Gagal generate key.');
+        
+        // Tampilkan key dan ubah tombol jadi tombol Salin (Copy)
+        resultBox.textContent = data.key;
+        resultBox.style.display = 'block';
+        btn.textContent = 'Salin Key';
+        btn.disabled = false;
+        
+        btn.onclick = function() {
+          navigator.clipboard.writeText(data.key);
+          btn.textContent = 'Berhasil Disalin!';
+          setTimeout(() => { btn.textContent = 'Salin Key'; }, 2000);
+        };
+
+      } catch(e) {
+        errorMsg.textContent = e.message;
+        btn.textContent = 'Coba Lagi';
+        btn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>
